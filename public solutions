@@ -1,0 +1,495 @@
+import java.net.*;
+import java.text.Normalizer;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+/**
+ * Comprehensive SSRF Mitigation Example
+ * This class demonstrates protection against various SSRF bypass techniques including:
+ * - Decimal IP representations
+ * - Hexadecimal IP representations
+ * - Octal IP representations
+ * - Unicode normalization attacks
+ * - Case-insensitive bypass attempts
+ * - DNS rebinding
+ * - Private/Internal IP ranges
+ */
+public class SSRFMitigationExample {
+    
+    // Whitelist of allowed domains (best practice)
+    private static final Set<String> ALLOWED_DOMAINS = new HashSet<>(Arrays.asList(
+        "api.example.com",
+        "trusted-service.com",
+        "external-api.net"
+    ));
+    
+    // Blocked schemes
+    private static final Set<String> BLOCKED_SCHEMES = new HashSet<>(Arrays.asList(
+        "file", "ftp", "gopher", "dict", "jar", "data"
+    ));
+    
+    // Allowed schemes
+    private static final Set<String> ALLOWED_SCHEMES = new HashSet<>(Arrays.asList(
+        "http", "https"
+    ));
+    
+    /**
+     * Main validation method that checks for SSRF vulnerabilities
+     */
+    public static ValidationResult validateURL(String urlString) {
+        try {
+            // Step 1: Unicode Normalization (prevent Unicode-based bypasses)
+            String normalizedUrl = normalizeUnicode(urlString);
+            
+            // Step 2: Case normalization
+            String lowercaseUrl = normalizedUrl.toLowerCase();
+            
+            // Step 3: Basic URL parsing
+            URL url = new URL(normalizedUrl);
+            String scheme = url.getProtocol().toLowerCase();
+            String host = url.getHost().toLowerCase();
+            int port = url.getPort();
+            
+            // Step 4: Scheme validation
+            if (BLOCKED_SCHEMES.contains(scheme)) {
+                return ValidationResult.failure("Blocked scheme detected: " + scheme);
+            }
+            
+            if (!ALLOWED_SCHEMES.contains(scheme)) {
+                return ValidationResult.failure("Only HTTP and HTTPS schemes are allowed");
+            }
+            
+            // Step 5: Check for localhost variations (case-insensitive)
+            if (isLocalhost(host)) {
+                return ValidationResult.failure("Access to localhost is not allowed");
+            }
+            
+            // Step 6: Resolve host to IP and validate
+            InetAddress address = resolveAndValidateHost(host);
+            if (address == null) {
+                return ValidationResult.failure("Unable to resolve host or host is invalid");
+            }
+            
+            // Step 7: Check if IP is in private/internal range
+            if (isPrivateOrInternalIP(address)) {
+                return ValidationResult.failure("Access to private/internal IP addresses is not allowed");
+            }
+            
+            // Step 8: Validate against decimal/hex/octal IP representations
+            if (isNumericIPRepresentation(host)) {
+                return ValidationResult.failure("Numeric IP representations are not allowed");
+            }
+            
+            // Step 9: Whitelist check (most secure approach)
+            if (!isWhitelisted(host)) {
+                return ValidationResult.failure("Domain is not in the whitelist");
+            }
+            
+            // Step 10: Additional checks for URL encoding bypass attempts
+            if (containsSuspiciousEncoding(urlString)) {
+                return ValidationResult.failure("Suspicious encoding detected in URL");
+            }
+            
+            return ValidationResult.success("URL validation passed", normalizedUrl);
+            
+        } catch (MalformedURLException e) {
+            return ValidationResult.failure("Invalid URL format: " + e.getMessage());
+        } catch (UnknownHostException e) {
+            return ValidationResult.failure("Unknown host: " + e.getMessage());
+        } catch (Exception e) {
+            return ValidationResult.failure("Validation error: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Normalize Unicode characters to prevent Unicode-based bypasses
+     * Converts various Unicode representations to their canonical form
+     */
+    private static String normalizeUnicode(String input) {
+        if (input == null) {
+            return null;
+        }
+        
+        // Normalize to NFD (Canonical Decomposition) then to NFC (Canonical Composition)
+        String normalized = Normalizer.normalize(input, Normalizer.Form.NFD);
+        normalized = Normalizer.normalize(normalized, Normalizer.Form.NFC);
+        
+        // Remove zero-width characters that might be used for obfuscation
+        normalized = normalized.replaceAll("[\\u200B-\\u200D\\uFEFF]", "");
+        
+        return normalized;
+    }
+    
+    /**
+     * Check if host is localhost using various representations
+     * Handles: localhost, 127.0.0.1, ::1, 0.0.0.0, variations
+     */
+    private static boolean isLocalhost(String host) {
+        host = host.toLowerCase();
+        
+        Set<String> localhostVariations = new HashSet<>(Arrays.asList(
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+            "::1",
+            "[::1]",
+            "0:0:0:0:0:0:0:1",
+            "[0:0:0:0:0:0:0:1]"
+        ));
+        
+        // Check direct matches
+        if (localhostVariations.contains(host)) {
+            return true;
+        }
+        
+        // Check for 127.x.x.x range
+        if (host.startsWith("127.")) {
+            return true;
+        }
+        
+        // Check for localhost variations with different TLDs
+        if (host.matches("localhost\\.[a-z]+")) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Resolve hostname and validate the resulting IP address
+     */
+    private static InetAddress resolveAndValidateHost(String host) throws UnknownHostException {
+        // Get all IP addresses for the hostname
+        InetAddress[] addresses = InetAddress.getAllByName(host);
+        
+        // Check if any resolved IP is problematic
+        for (InetAddress addr : addresses) {
+            if (isPrivateOrInternalIP(addr)) {
+                return null; // Invalid if any resolution points to internal IP
+            }
+        }
+        
+        return addresses[0];
+    }
+    
+    /**
+     * Check if IP address is in private or internal ranges
+     * Includes: RFC1918, loopback, link-local, multicast, etc.
+     */
+    private static boolean isPrivateOrInternalIP(InetAddress address) {
+        // Loopback addresses (127.0.0.0/8 for IPv4, ::1 for IPv6)
+        if (address.isLoopbackAddress()) {
+            return true;
+        }
+        
+        // Site-local/Private addresses (RFC1918)
+        if (address.isSiteLocalAddress()) {
+            return true;
+        }
+        
+        // Link-local addresses (169.254.0.0/16 for IPv4, fe80::/10 for IPv6)
+        if (address.isLinkLocalAddress()) {
+            return true;
+        }
+        
+        // Multicast addresses
+        if (address.isMulticastAddress()) {
+            return true;
+        }
+        
+        // Any local address (0.0.0.0)
+        if (address.isAnyLocalAddress()) {
+            return true;
+        }
+        
+        // Additional checks for IPv4
+        byte[] ipBytes = address.getAddress();
+        
+        if (ipBytes.length == 4) { // IPv4
+            int firstOctet = ipBytes[0] & 0xFF;
+            int secondOctet = ipBytes[1] & 0xFF;
+            
+            // 10.0.0.0/8 - Private network
+            if (firstOctet == 10) {
+                return true;
+            }
+            
+            // 172.16.0.0/12 - Private network
+            if (firstOctet == 172 && secondOctet >= 16 && secondOctet <= 31) {
+                return true;
+            }
+            
+            // 192.168.0.0/16 - Private network
+            if (firstOctet == 192 && secondOctet == 168) {
+                return true;
+            }
+            
+            // 169.254.0.0/16 - Link-local
+            if (firstOctet == 169 && secondOctet == 254) {
+                return true;
+            }
+            
+            // 127.0.0.0/8 - Loopback (additional check)
+            if (firstOctet == 127) {
+                return true;
+            }
+            
+            // 0.0.0.0/8 - Current network
+            if (firstOctet == 0) {
+                return true;
+            }
+            
+            // 224.0.0.0/4 - Multicast
+            if (firstOctet >= 224 && firstOctet <= 239) {
+                return true;
+            }
+            
+            // 240.0.0.0/4 - Reserved
+            if (firstOctet >= 240) {
+                return true;
+            }
+            
+            // 100.64.0.0/10 - Shared Address Space (RFC6598)
+            if (firstOctet == 100 && secondOctet >= 64 && secondOctet <= 127) {
+                return true;
+            }
+            
+            // 192.0.0.0/24 - IETF Protocol Assignments
+            if (firstOctet == 192 && secondOctet == 0 && (ipBytes[2] & 0xFF) == 0) {
+                return true;
+            }
+            
+            // 192.0.2.0/24 - TEST-NET-1
+            if (firstOctet == 192 && secondOctet == 0 && (ipBytes[2] & 0xFF) == 2) {
+                return true;
+            }
+            
+            // 198.51.100.0/24 - TEST-NET-2
+            if (firstOctet == 198 && secondOctet == 51 && (ipBytes[2] & 0xFF) == 100) {
+                return true;
+            }
+            
+            // 203.0.113.0/24 - TEST-NET-3
+            if (firstOctet == 203 && secondOctet == 0 && (ipBytes[2] & 0xFF) == 113) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Detect decimal, hexadecimal, or octal IP representations
+     * Examples:
+     * - Decimal: 2130706433 (represents 127.0.0.1)
+     * - Hex: 0x7f000001 (represents 127.0.0.1)
+     * - Octal: 017700000001 (represents 127.0.0.1)
+     * - Mixed: 127.0.0.1 in various forms
+     */
+    private static boolean isNumericIPRepresentation(String host) {
+        // Check for pure decimal representation
+        if (host.matches("^\\d+$")) {
+            try {
+                long ipAsLong = Long.parseLong(host);
+                // Valid IPv4 as decimal would be 0 to 4294967295 (2^32 - 1)
+                if (ipAsLong >= 0 && ipAsLong <= 4294967295L) {
+                    return true;
+                }
+            } catch (NumberFormatException e) {
+                // Not a valid number
+            }
+        }
+        
+        // Check for hexadecimal representation (0x...)
+        if (host.toLowerCase().startsWith("0x")) {
+            return true;
+        }
+        
+        // Check for octal representation in IP parts
+        if (host.matches(".*\\b0[0-7]+\\b.*")) {
+            return true;
+        }
+        
+        // Check for mixed representations in dotted notation
+        String[] parts = host.split("\\.");
+        if (parts.length > 1 && parts.length <= 4) {
+            for (String part : parts) {
+                // Check for hex in parts
+                if (part.toLowerCase().startsWith("0x")) {
+                    return true;
+                }
+                // Check for octal in parts
+                if (part.length() > 1 && part.startsWith("0") && part.matches("[0-7]+")) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Check if domain is in the whitelist
+     */
+    private static boolean isWhitelisted(String host) {
+        // Exact match
+        if (ALLOWED_DOMAINS.contains(host)) {
+            return true;
+        }
+        
+        // Check subdomains of whitelisted domains
+        for (String allowedDomain : ALLOWED_DOMAINS) {
+            if (host.endsWith("." + allowedDomain)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Check for suspicious encoding that might be used to bypass filters
+     */
+    private static boolean containsSuspiciousEncoding(String url) {
+        // Check for multiple URL encoding (double encoding)
+        if (url.matches(".*%25[0-9a-fA-F]{2}.*")) {
+            return true;
+        }
+        
+        // Check for null byte injection
+        if (url.contains("%00") || url.contains("\0")) {
+            return true;
+        }
+        
+        // Check for CRLF injection attempts
+        if (url.matches(".*%0[dDaA].*")) {
+            return true;
+        }
+        
+        // Check for backslash variations that might bypass parsing
+        if (url.matches(".*\\\\x[0-9a-fA-F]{2}.*")) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Validation result class
+     */
+    public static class ValidationResult {
+        private final boolean valid;
+        private final String message;
+        private final String normalizedUrl;
+        
+        private ValidationResult(boolean valid, String message, String normalizedUrl) {
+            this.valid = valid;
+            this.message = message;
+            this.normalizedUrl = normalizedUrl;
+        }
+        
+        public static ValidationResult success(String message, String normalizedUrl) {
+            return new ValidationResult(true, message, normalizedUrl);
+        }
+        
+        public static ValidationResult failure(String message) {
+            return new ValidationResult(false, message, null);
+        }
+        
+        public boolean isValid() {
+            return valid;
+        }
+        
+        public String getMessage() {
+            return message;
+        }
+        
+        public String getNormalizedUrl() {
+            return normalizedUrl;
+        }
+        
+        @Override
+        public String toString() {
+            return "ValidationResult{" +
+                    "valid=" + valid +
+                    ", message='" + message + '\'' +
+                    ", normalizedUrl='" + normalizedUrl + '\'' +
+                    '}';
+        }
+    }
+    
+    /**
+     * Main method with test cases demonstrating various SSRF attack attempts
+     */
+    public static void main(String[] args) {
+        System.out.println("=== SSRF Mitigation Test Cases ===\n");
+        
+        // Valid URLs (that would pass if whitelisted)
+        testUrl("http://api.example.com/data", "Valid whitelisted domain");
+        testUrl("https://api.example.com/api/v1", "Valid HTTPS whitelisted domain");
+        
+        System.out.println("\n--- SSRF Attack Attempts ---\n");
+        
+        // Localhost bypass attempts
+        testUrl("http://localhost/admin", "Localhost attempt");
+        testUrl("http://127.0.0.1/admin", "Loopback IP");
+        testUrl("http://127.1/admin", "Shortened loopback");
+        testUrl("http://0.0.0.0/admin", "Any local address");
+        
+        // Decimal representation attempts
+        testUrl("http://2130706433/admin", "Decimal IP (127.0.0.1)");
+        testUrl("http://3232235777/admin", "Decimal IP (192.168.1.1)");
+        
+        // Hexadecimal representation attempts
+        testUrl("http://0x7f000001/admin", "Hex IP (127.0.0.1)");
+        testUrl("http://0x7f.0x0.0x0.0x1/admin", "Dotted hex IP");
+        testUrl("http://0xc0a80101/admin", "Hex IP (192.168.1.1)");
+        
+        // Octal representation attempts
+        testUrl("http://017700000001/admin", "Octal IP (127.0.0.1)");
+        testUrl("http://0177.0.0.1/admin", "Mixed octal IP");
+        
+        // Private IP ranges
+        testUrl("http://10.0.0.1/admin", "Private IP - 10.0.0.0/8");
+        testUrl("http://172.16.0.1/admin", "Private IP - 172.16.0.0/12");
+        testUrl("http://192.168.1.1/admin", "Private IP - 192.168.0.0/16");
+        testUrl("http://169.254.169.254/latest/meta-data/", "AWS metadata service");
+        
+        // Unicode normalization attempts
+        testUrl("http://ⓛⓞⓒⓐⓛⓗⓞⓢⓣ/admin", "Unicode circled letters");
+        testUrl("http://lοcalhοst/admin", "Unicode lookalike (Greek omicron)");
+        
+        // Case variation attempts
+        testUrl("http://LocalHost/admin", "Mixed case localhost");
+        testUrl("http://LOCALHOST/admin", "Uppercase localhost");
+        
+        // Blocked schemes
+        testUrl("file:///etc/passwd", "File scheme");
+        testUrl("ftp://internal-server/data", "FTP scheme");
+        testUrl("gopher://localhost:70/", "Gopher scheme");
+        
+        // URL encoding bypass attempts
+        testUrl("http://127.0.0.1%00.example.com/", "Null byte injection");
+        testUrl("http://%31%32%37%2e%30%2e%30%2e%31/", "Fully encoded 127.0.0.1");
+        
+        // Non-whitelisted domain
+        testUrl("http://evil.com/attack", "Non-whitelisted domain");
+        
+        System.out.println("\n=== Test Complete ===");
+    }
+    
+    private static void testUrl(String url, String description) {
+        System.out.println("Testing: " + description);
+        System.out.println("URL: " + url);
+        ValidationResult result = validateURL(url);
+        System.out.println("Result: " + (result.isValid() ? "✓ ALLOWED" : "✗ BLOCKED"));
+        System.out.println("Message: " + result.getMessage());
+        if (result.isValid() && result.getNormalizedUrl() != null) {
+            System.out.println("Normalized: " + result.getNormalizedUrl());
+        }
+        System.out.println();
+    }
+}
+
