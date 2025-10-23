@@ -765,15 +765,4 @@ public void testSSRFVerification_validateConnectionConfiguration() {
         System.out.println("\n=== Test Complete ===");
     }
     
-    private static void testUrl(String url, String description) {
-        System.out.println("Testing: " + description);
-        System.out.println("URL: " + url);
-        ValidationResult result = validateURL(url);
-        System.out.println("Result: " + (result.isValid() ? "✓ ALLOWED" : "✗ BLOCKED"));
-        System.out.println("Message: " + result.getMessage());
-        if (result.isValid() && result.getNormalizedUrl() != null) {
-            System.out.println("Normalized: " + result.getNormalizedUrl());
-        }
-        System.out.println();
-    }
 }
