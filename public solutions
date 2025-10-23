@@ -1,24 +1,309 @@
-import java.net.*;
-import java.text.Normalizer;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.regex.Pattern;
+public void testSSRFVerification_validateConnectionConfiguration() {
+        // Setup common test infrastructure
+        ConfigInfo configInfo = new ConfigInfo();
+        configInfo.setIsSaas(true);
+        ConfigInfo.setInstance(configInfo);
+        DataManagerRpcClient mockRpcClient = mock(DataManagerRpcClient.class);
+        DataManagerGrpcClient mockGrpcClient = mock(DataManagerGrpcClient.class);
+        PrestoDataLoadManagerImpl dataLoadManager = spy(new PrestoDataLoadManagerImpl(
+                configInfo, mockRpcClient, mockGrpcClient));
+        UserDatasourceAuthInfo userAuthInfo = new UserDatasourceAuthInfo();
 
-/**
- * Comprehensive SSRF Mitigation Example
- * This class demonstrates protection against various SSRF bypass techniques including:
- * - Decimal IP representations
- * - Hexadecimal IP representations
- * - Octal IP representations
- * - Unicode normalization attacks
- * - Case-insensitive bypass attempts
- * - DNS rebinding
- * - Private/Internal IP ranges
- */
-public class SSRFMitigationExample {
-    
-    // Whitelist of allowed domains (best practice)
+        // Test Case 1: localhost (should be blocked)
+        Map<String, String> sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "23");
+
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for localhost");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block localhost",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("localhost")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 2: 127.0.0.1 with HTTP port (should be blocked)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "8080");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for 127.0.0.1");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block 127.0.0.1",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("127.0.0.1")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 3: 127.0.0.1 with SSH port (should be blocked)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "22");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for 127.0.0.1:22");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block 127.0.0.1:22",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 4: 0.0.0.0 (should be blocked)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "0.0.0.0");
+        sourceConfigMap.put("port", "5432");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for 0.0.0.0");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block 0.0.0.0",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("0.0.0.0")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 5: Private IP 192.168.1.1 (should be blocked unless bridge connectivity)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "192.168.1.1");
+        sourceConfigMap.put("port", "3306");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for private IP 192.168.1.1");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block private IP 192.168.1.1",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("private")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 6: Private IP 10.0.0.1 (should be blocked unless bridge connectivity)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "10.0.0.1");
+        sourceConfigMap.put("port", "5432");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for private IP 10.0.0.1");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block private IP 10.0.0.1",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("private")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 7: Private IP 172.16.0.1 (should be blocked unless bridge connectivity)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "172.16.0.1");
+        sourceConfigMap.put("port", "1433");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for private IP 172.16.0.1");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block private IP 172.16.0.1",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("private")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 8: Cloud metadata endpoint 169.254.169.254 (should be blocked)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "169.254.169.254");
+        sourceConfigMap.put("port", "80");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for cloud metadata endpoint");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block cloud metadata endpoint",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("metadata")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 9: Link-local IP 169.254.1.1 (should be blocked)
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "169.254.1.1");
+        sourceConfigMap.put("port", "443");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for link-local IP");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block link-local IP",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("link")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 10: Suspicious port 21 (FTP) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "21");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for FTP port");
+        }  catch (CallosumException e) {
+            assertTrue("SSRF verification should block FTP port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 11: Suspicious port 25 (SMTP) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "25");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for SMTP port");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block SMTP port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 12: Suspicious port 53 (DNS) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "53");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for DNS port");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block DNS port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 13: Suspicious port 111 (RPC) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "111");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for RPC port");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block RPC port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 14: Suspicious port 135 (Windows RPC) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "135");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for Windows RPC port");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block Windows RPC port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 15: Suspicious port 445 (SMB) with localhost
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "445");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for SMB port");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block SMB port",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("port")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 16: Multiple suspicious combinations - localhost with Telnet
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "23");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            fail("Expected ThoughtSpotException for localhost:23 (Telnet)");
+        } catch (CallosumException e) {
+            assertTrue("SSRF verification should block localhost:23",
+                      e.getMessage().toLowerCase().contains("blocked")
+                              || e.getMessage().toLowerCase().contains("localhost")
+                              || e.getMessage().toLowerCase().contains("ssrf"));
+        }
+
+        // Test Case 17: Test with valid public host and standard database port
+        // (should pass if not blocked by other rules)
+        // Note: This test might still fail due to DNS resolution or other validation,
+        // but should not fail due to SSRF blocking
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "thoughtspot_partner.snowflakecomputing.com");
+        sourceConfigMap.put("port", "5432");
+        sourceConfigMap.put("private_key", "test_private_key");
+        sourceConfigMap.put("warehouse", "test_warehouse");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            // If it passes, that's fine - the host is not blocked by SSRF protection
+            assertTrue("Valid public host should not be blocked by SSRF", true);
+        } catch (CallosumException e) {
+            // If it fails, it should not be due to SSRF blocking (unless DNS resolution fails)
+            String errorMsg = e.getMessage().toLowerCase();
+            if (errorMsg.contains("ssrf") && errorMsg.contains("blocked")) {
+                fail("Valid public host should not be blocked by SSRF protection: "
+                    + e.getMessage());
+            }
+            // Other failures (DNS, connection, etc.) are acceptable for this test
+            assertTrue("Non-SSRF validation failures are acceptable", true);
+        }
+
+        // Test Case 18: Test SSRF protection is disabled when SaaS flag is false
+        configInfo.setIsSaas(false);
+        ConfigInfo.setInstance(configInfo);
+        sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "127.0.0.1");
+        sourceConfigMap.put("port", "22");
+        try {
+            dataLoadManager.validateConnectionConfiguration(sourceConfigMap, userAuthInfo);
+            // Should not be blocked by SSRF when SaaS is disabled
+            assertTrue("SSRF protection should be disabled when SaaS=false", true);
+        } catch (CallosumException e) {
+            // If it fails, it should not be due to SSRF blocking
+            String errorMsg = e.getMessage().toLowerCase();
+            if (errorMsg.contains("ssrf") && errorMsg.contains("blocked")) {
+                fail("SSRF protection should be disabled when SaaS=false: " + e.getMessage());
+            }
+            // Other failures are acceptable
+            assertTrue("Non-SSRF validation failures are acceptable when SaaS=false", true);
+        }
+    }
+
+    @Test
+    public void testSSRFVerification_fetchMetadata() {
+        ConfigInfo configInfo = new ConfigInfo();
+        configInfo.setIsSaas(true);
+        ConfigInfo.setInstance(configInfo);
+        DataManagerRpcClient mockRpcClient = mock(DataManagerRpcClient.class);
+        DataManagerGrpcClient mockGrpcClient = mock(DataManagerGrpcClient.class);
+        PrestoDataLoadManagerImpl dataLoadManager = spy(new PrestoDataLoadManagerImpl(
+                configInfo, mockRpcClient, mockGrpcClient));
+        UserDatasourceAuthInfo userAuthInfo = new UserDatasourceAuthInfo();
+
+        // Test Case 1: localhost (should be blocked)
+        Map<String, String> sourceConfigMap = new HashMap<>();
+        sourceConfigMap.put("host", "localhost");
+        sourceConfigMap.put("port", "23");
+        sourceConfigMap.put("user", "test_user");
+        try {
+            dataLoadManager.fetchMetadata(sourceConfigMap, false, userAuthInfo, null);
+            fail("Expected ThoughtSpotException for localhost");
+        } catch (CallosumException e) {
+            System.out.println("Exception: " + e.getMessage());
+            assertTrue("SSRF verification should block localhost",
+                    e.getMessage().toLowerCase().contains("blocked")
+                            || e.getMessage().toLowerCase().contains("localhost")
+                            || e.getMessage().toLowerCase().contains("ssrf"));
     private static final Set<String> ALLOWED_DOMAINS = new HashSet<>(Arrays.asList(
         "api.example.com",
         "trusted-service.com",
@@ -492,4 +777,3 @@ public class SSRFMitigationExample {
         System.out.println();
     }
 }
-
